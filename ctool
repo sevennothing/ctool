@@ -1,0 +1,925 @@
+#!/bin/sh 
+################################################################################
+#
+# Copyright © Licaijun 2013. All rights reserved.
+#
+# caijun Li, lcjht@yahoo.com.cn, 2013.3.19
+#
+# This file is part of crosstool auto make.
+#
+# 备注：
+#	1. The GNU C Library cannot be compiled in the source directory. 
+#	You must build it in a separate build directory.so create a directory 
+#	$ROOTPATH/glibc-build to put the object files.
+#
+#	2.不允许忽略错误继续编译，因为交叉工具链的编译是相辅相成的。因此ctool遇到错误时跳过继续编译的选项应当慎用。
+#
+#	3.建议使用eglibc作为C库，它可以使用-Os 选项进行编译，这样生成的库文件只哟glibc生存的库的5～6分之一。
+#
+#	4.glibc 中的sunrpc/rpc/*.h 没有正确安装。
+#
+#	5.
+#
+#	6.ctool仅为简单测试版本，可以使用crosstool-NG来制作和测试交叉工具链【建议】。
+
+<<COM
+	1.想要把make输出的全部信息，输出到某个文件中，最常见的办法就是：
+	make xxx > build_output.txt
+	此时默认情况是没有改变2=stderr的输出方式，还是屏幕，所以，如果有错误信息，还是可以在屏幕上看到的。
+	2.只需要把make输出中的错误（及警告）信息输出到文件中ing，可以用：
+	make xxx 2> build_output.txt
+	相应地，由于1=stdout没有变，还是屏幕，所以，那些命令执行时候输出的正常信息，还是会输出到屏幕上，你还是可以在屏幕上看到的。
+	3.只需要把make输出中的正常（非错误，非警告）的信息输出到文件中，可以用：
+	make xxx 1> build_output.txt
+	相应地，由于2=stderr没有变，还是屏幕，所以，那些命令执行时候输出的错误信息，还是会输出到屏幕上，你还是可以在屏幕上看到的。
+	4.想要把正常输出信息和错误信息输出到分别的文件中，可以用：
+	make xxx 1> build_output_normal.txt 2>build_output_error.txt
+	即联合使用了1和2，正常信息和错误信息，都输出到对应文件中了。
+	5. 所有的信息都输出到同一个文件中：
+	make xxx > build_output_all.txt 2>&1
+	其中的2>&1表示错误信息输出到&1中，而&1，指的是前面的那个文件：build_output_all.txt 。
+	注意：上面所有的1,2等数字，后面紧跟着大于号'>' ，中间不能有空格。
+COM
+#
+#
+#
+################################################################################
+
+version=1.0
+ARCH=powerpc
+core=e300c3
+TARGET=powerpc-none-linux-gnu
+ROOTPATH=${PWD}
+PACKAGE=${PWD}/pakages
+TOP=$ROOTPATH/cross-build/ppc
+TOOLS=$TOP/tools
+SOURCES=$TOP/src
+OBJ=$TOP/obj
+SYSROOT=$TOP/sysroot
+
+eglibc_compiled_path=$TOP/build-localedef
+
+binutils_source=binutils-2.23.1
+glibc_source=glibc-2.14.1
+eglibc_source=eglibc-2.14
+gcc_source=gcc-4.7.2
+linux_source=linux-2.6.29.6
+gmp_source=gmp-5.0.2
+mpfr_source=mpfr-3.1.2
+mpc_source=mpc-1.0
+
+#use glibc or eglibc;default use eglibc
+USE_EGLIBC=yes
+#EGLIBC supports building the library with compiler optimizing for size -Os instead of for speed -O2
+USE_OS=yes
+EGLIBC_FIRST=true
+
+logfile=$ROOTPATH/log
+
+parse_config(){
+
+	if [ -f $ROOTPATH/config.in ];then
+
+	binutils_source=`awk -F '=' '$1~/^binutils/{if($2!=NULL) \
+											print $2;else print "'$binutils_source'"}' \
+											$ROOTPATH/config.in`
+	glibc_source=`awk -F '=' '$1~/^glibc/{if($2!=NULL) \
+											print $2;else print "'$glibc_source'"}' \
+											$ROOTPATH/config.in`
+
+	eglibc_source=`awk -F '=' '$1~/^eglibc/{if($2!=NULL) \
+											print $2;else print "'$eglibc_source'"}' \
+											$ROOTPATH/config.in`
+	gcc_source=`awk -F '=' '$1~/^gcc/{if($2!=NULL) \
+											print $2;else print "'$gcc_source'"}' \
+											$ROOTPATH/config.in`
+	linux_source=`awk -F '=' '$1~/^linux/{if($2!=NULL) \
+											print $2;else print "'$linux_source'"}' \
+											$ROOTPATH/config.in`
+	gmp_source=`awk -F '=' '$1~/^gmp/{if($2!=NULL) \
+											print $2;else print "'$gmp_source'"}' \
+											$ROOTPATH/config.in`
+	mpfr_source=`awk -F '=' '$1~/^mpfr/{if($2!=NULL) \
+											print $2;else print "'$mpfr_source'"}' \
+											$ROOTPATH/config.in`
+	mpc_source=`awk -F '=' '$1~/^mpc/{if($2!=NULL) \
+											print $2;else print "'$mpc_source'"}' \
+											$ROOTPATH/config.in`
+
+	ARCH=`awk -F '=' '$1~/^ARCH/{if($2!=NULL) \
+											print $2;else print "'$ARCH'"}' \
+											$ROOTPATH/config.in`
+
+	TARGET=`awk -F '=' '$1~/^target/{if($2!=NULL) \
+											print $2;else print "'$TARGET'"}' \
+											$ROOTPATH/config.in`
+
+	TOOLS=`awk -F '=' '$1~/^tools_path/{if($2!=NULL) \
+											print $2;else print "'$TOOLS'"}' \
+											$ROOTPATH/config.in`
+
+	SOURCES=`awk -F '=' '$1~/^source_path/{if($2!=NULL) \
+											print $2;else print "'$SOURCES'"}' \
+											$ROOTPATH/config.in`
+
+	PACKAGE=`awk -F '=' '$1~/^package_path/{if($2!=NULL) \
+											print $2;else print "'$PACKAGE'"}' \
+											$ROOTPATH/config.in`
+
+	USE_EGLIBC=`awk -F '=' '$1~/^USE_EGLIBC/{if($2!=NULL) \
+											print $2;else print "'$USE_EGLIBC'"}' \
+											$ROOTPATH/config.in`
+	
+	else
+		echo "\"$ROOTPATH/config.in\" not found,used default config.you can use command \"ctool -M config\" to create config.ini "
+	fi
+
+	export LANGUAGE=C     #下面两个参数编译glibc时默认使用的locale
+	export LC_ALL=C
+
+	export PATH=$TOOLS/bin:$PATH
+
+}
+
+show_configinfo(){
+	# show current config
+	echo "current config list:
+	\033[01mbinutils version：\033[0m    ${binutils_source#*-}
+	\033[01mGNU gcc version：\033[0m     ${gcc_source#*-}
+	\033[01mlinux version: \033[0m       ${linux_source#*-}
+	\033[01mGNU gmp version:\033[0m      ${gmp_source#*-}
+	\033[01mGNU mpfr version:\033[0m     ${mpfr_source#*-}
+	\033[01mGNU mpc version: \033[0m     ${mpc_source#*-}\
+	"
+	if [ "$USE_EGLIBC" = "no" ];then
+		echo "	\033[01muse glibc;version is\033[0m  ${glibc_source#*-} "
+	elif [ "$USE_EGLIBC" = "yes" ];then
+		echo "	\033[01muse eglibc;version is\033[0m ${eglibc_source#*-} "
+	fi
+	echo "\
+	\033[01mtarget platform:\033[0m      $ARCH 
+	\033[01mtarget:\033[0m               $TARGET
+	\033[01mTools path:\033[0m           $TOOLS 
+	\033[01mSoftware source path:\033[0m $SOURCES
+	\033[01mSoftware path:\033[0m        $PACKAGE
+	"
+
+}
+
+create_config_file(){
+
+	if [ -f $ROOTPATH/config.in ];then
+		mv $ROOTPATH/config.in $ROOTPATH/config.in.old
+	fi
+	touch $ROOTPATH/config.in
+	echo "## this is a config file,it's create by automatic.You can modify if you want.
+
+#ARCH set,default powerpc
+ARCH=$ARCH
+
+#target set,default power-linux
+target=$TARGET
+
+#root path set,default ctool's path
+ROOTPATH=${PWD}
+
+#tools floder path
+tools_path=$TOOLS
+
+#sources path
+source_path=$SOURCES
+
+#package path
+package_path=$PACKAGE
+
+# binutils version,default binutils-2.23.1
+binutils=$binutils_source
+
+# glibc version,default glibc-2.14.1
+glibc=$glibc_source
+
+# eglibc version,default eglibc-2.14
+eglibc=$eglibc_source
+
+# gcc version,default gcc-4.7.2
+gcc=$gcc_source
+
+# linux version,default linux-2.6.29.6
+linux=$linux_source
+
+# gmp version,default gmp-5.0.2
+gmp=$gmp_source
+
+# mpfr version,default mpfr-3.1.2
+mpfr=$mpfr_source
+
+# mpc version,default mpc-1.0
+mpc=$mpc_source
+
+# use EGLIBC
+USE_EGLIBC=yes
+
+# use -Os CFLAG to build eglibc
+USE_OS=yes
+
+" > $ROOTPATH/config.in
+
+}
+
+usage(){
+
+echo "\nThis script is used to creat crosstool chains by automatic.Current version is $version
+
+\033[31m ctool [-h <help>] [-V <verbose>] [-v <version>] [-c <configure>] [options....]\033[0m
+    Where:
+	\033[35m\033[01m-h\033[0m   : help on usage
+	\033[35m\033[01m-V\033[0m   
+	Where verbose is either:
+		s         display all information in the make
+	\033[35m\033[01m-v\033[0m    show ctool's version  
+	\033[35m\033[01m-c\033[0m    show ctool's current config 
+	\033[35m\033[01m-M\033[0m
+	Where mode is either:
+		all       mkae all package though some erro happened
+		distclean delete all obj
+		config    create config file
+
+	\033[35m\033[01m-p\033[0m[package]	only build the package
+	bleow is packages list
+
+		\033[01mlinux_header\033[0m   install linux header
+
+		\033[01mbinutils\033[0m       GNU Binary Utilities
+
+		\033[01mgmp\033[0m            The GNU Multiple Precision Arithmetic Library
+
+		\033[01mmpfr\033[0m 	       The GNU MPFR Library;The MPFR library is a C library for multiple-precision
+		               floating-point computations with correct rounding.
+
+		\033[01mmpc\033[0m            Gnu Mpc is a C library for the arithmetic of complex numbers with arbitrarily
+		               high precision and correct rounding of the result. It extends the principles of 
+		               the IEEE-754 standard for fixed precision real floating point numbers to complex
+		               numbers, providing well-defined semantics for every operation. At the same time, 
+		               speed of operation at high precision is a major design goal
+
+		\033[01mglibc\033[0m           GNU C Library
+
+		\033[01mgcc_bootstrap\033[0m   make gcc by first
+
+		\033[01mgcc_full\033[0m        make gcc by second
+
+		listpkgs                       list have packages
+
+"
+}
+
+cmd_ignore_erro(){
+	set +e
+	cmd=$1
+	shift
+	$cmd "$@"
+	set -e
+	
+}
+
+<<COM
+制作交叉编译工具链的步骤如下：
+
+1) Build a cross-compiler, with certain facilities disabled.
+
+2) Configure the C library using the compiler you built in step 1).
+   Build a few of the C run-time object files, but not the rest of the
+   library.  Install the library's header files and the run-time
+   object files, and create a dummy libc.so.
+
+3) Build a second cross-compiler, using the header files and object
+   files you installed in step 2.
+
+4) Configure, build, and install a fresh C library, using the compiler
+   built in step 3.
+
+5) Build a third cross-compiler, based on the C library built in step 4.
+
+COM
+
+
+mk_linux_header(){
+	# 安装ｌｉｎｕｘ头文件
+    echo "\033[32;40m\33[01m Install linux header \033[0m"
+
+    if [ ! -d $SOURCES/$linux_source ];then
+        tar j${show_flag:+v}xf $PACKAGE/$linux_source.tar.bz2 -C $SOURCES
+    fi
+
+	cp -r $SOURCES/$linux_source $OBJ/linux
+    cd $OBJ/linux
+
+    make headers_install ARCH=$ARCH CROSS_COMPILE=$TARGET- INSTALL_HDR_PATH=$SYSROOT/usr > $logfile-linux-header
+
+	echo "[$(date +%F) $(date +%H:%M:%S)]	install linux header successfull" >> $ROOTPATH/ctool.log
+	
+}
+
+mk_binutils(){ #　建立二进制工具
+    echo "\033[32;40m\33[01m make binutils \033[0m"
+    if [ ! -d $SOURCES/$binutils_source ];then
+        tar j${show_flag:+v}xf $PACKAGE/$binutils_source.tar.bz2 -C $SOURCES
+    fi
+    if [ ! -d $OBJ/binutils-build ];then
+        mkdir -p $OBJ/binutils-build 
+    fi
+    cd $OBJ/binutils-build 
+    $SOURCES/$binutils_source/configure \
+		--prefix=$TOOLS \
+		--target=$TARGET \
+		--with-sysroot=$SYSROOT \
+		>/dev/null
+
+	make > $logfile-binutils
+
+	make install >/dev/null
+
+	echo "[$(date +%F) $(date +%H:%M:%S)]	build and install binutils successfull" >> $ROOTPATH/ctool.log
+
+}
+
+mk_gmp(){
+
+	echo "\033[32m\33[01m make $gmp_source \033[0m"
+    if [ ! -d $SOURCES/$gmp_source ];then
+        tar j${show_flag:+v}xf $PACKAGE/$gmp_source.tar.bz2 -C $SOURCES
+    fi
+    cd $SOURCES/$gmp_source  
+    ./configure --enable-cxx --enable-mpbsd --prefix=/usr >/dev/null
+    make  > $logfile-gmp
+    make check
+    sudo make install >/dev/null
+	
+	echo "[$(date +%F) $(date +%H:%M:%S)]	build and install gmp successfull" >> $ROOTPATH/ctool.log
+
+}
+
+mk_mpfr(){
+
+	echo "\033[32m\33[01m make $mpfr_source \033[0m"
+    if [ ! -d $SOURCES/$mpfr_source ];then 
+        tar j${show_flag:+v}xf $PACKAGE/$mpfr_source.tar.bz2 -C $SOURCES
+    fi
+    cd $SOURCES/$mpfr_source 
+    ./configure --enable-thread-safe --prefix=/usr >/dev/null
+    make > $logfile-mpfr
+    make check >/dev/null
+    sudo make install >/dev/null
+	echo "[$(date +%F) $(date +%H:%M:%S)]	build and install mpfr successfull" >> $ROOTPATH/ctool.log
+}
+
+mk_mpc(){
+
+	echo "\033[32m\33[01m make $mpc_source \033[0m"
+	if [ ! -d $SOURCES/$mpc_source ];then 
+		tar x${show_flag:+v}zf $PACKAGE/$mpc_source.tar.gz -C $SOURCES
+	fi
+	cd $SOURCES/$mpc_source 
+	./configure --with-gmp=/usr --with-mpfr=/usr --prefix=/usr \
+	--enable-valgrind-tests >/dev/null
+	make > $logfile-mpc
+	make check >/dev/null
+	sudo make install >/dev/null
+	echo "[$(date +%F) $(date +%H:%M:%S)]	build and install mpc successfull" >> $ROOTPATH/ctool.log
+
+}
+
+mk_glibc(){ # 建立C链接库
+
+	echo "\033[32m\33[01m make $glibc_source \033[0m"
+
+    if [ ! -d $SOURCES/$glibc_source ];then
+		if [ -f $PACKAGE/$glibc_source.tar.gz ];then
+        	tar z${show_flag:+v}xf $PACKAGE/$glibc_source.tar.gz -C $SOURCES
+		elif [ -f $PACKAGE/$glibc_source.tar.bz2 ];then
+			tar j${show_flag:+v}xf $PACKAGE/$glibc_source.tar.bz2 -C $SOURCES
+		fi
+		tar j${show_flag:+v}xf $PACKAGE/glibc-linuxthreads-2.5.tar.bz2 --directory=$glibc_source -C $SOURCES/$glibc_source
+
+    fi
+    #TODO: 修改makeconfig,glibc-2.14
+	if [ "$glibc_source" = "glibc-2.14.1" ];then
+		cp -v $SOURCES/$glibc_source/Makeconfig $SOURCES/$glibc_source/Makeconfig.orig
+		sed -e 's/-lgcc_eh//g' $SOURCES/$glibc_source/Makeconfig.orig > $SOURCES/$glibc_source/Makeconfig
+
+		#sed -i 's/^gnulib := -lgcc $(libgcc_eh)/gnulib := -lgcc/' $SOURCES/$glibc_source/Makeconfig
+		#sed -i 's/^static-gnulib := -lgcc -lgcc_eh $(libunwind)/static-gnulib := -lgcc/' $SOURCES/$glibc_source/Makeconfig
+	fi
+
+
+	if [ ! -d $OBJ/glibc-build ];then
+		mkdir $OBJ/glibc-build
+	fi
+	cd $OBJ/glibc-build
+	# --host 生成的软件的运行平台 
+	# --build 编译该软件的平台类型，当host和build不同时，即为交叉编译: 在build对应的平台上编译可运行于host平台上的软件。 
+	# --with-headers 编译glibc时需要使用kernel的头文件，其中有关于powerpc相关的头文件 
+	# --with-binutils 注意，一定要是$TARGET下的bin目录，这里面的程序没有target-alias
+    CC=$TOOLS/bin/${TARGET}-gcc $SOURCES/$glibc_source/configure  --prefix=/usr \
+    --host=$TARGET \
+    --build=$($SOURCES/$glibc_source/scripts/config.guess) \
+	--enable-kernel=2.6.25 \
+    --with-headers=$SYSROOT/usr/include/ \
+    --with-binutils=$TOOLS/$TARGET/bin \
+    --disable-profile \
+	--enable-add-ons libc_cv_forced_unwind=yes  libc_cv_c_cleanup=yes >/dev/null
+	
+
+    make > $logfile-glibc
+    make install_root=$TOOLS/$TARGET prefix="" install >/dev/null
+
+	#TODO modify libc.o
+	sed -i 's#GROUP ( /lib/libc.so.6 /lib/libc_nonshared.a  AS_NEEDED ( /lib/ld.so.1 ) )#GROUP ( libc.so.6 libc_nonshared.a  AS_NEEDED ( ld.so.1 ) )#g' $TOOLS/$TARGET/lib/libc.so
+
+	echo "[$(date +%F) $(date +%H:%M:%S)]	build and install glibc successfull" >> $ROOTPATH/ctool.log
+	
+}
+
+
+mk_eglibc(){
+	
+	if [ $EGLIBC_FIRST = true ];then
+		echo "\033[32m\33[01m make $eglibc_source by first:EGLIBC Headers and Preliminary Objects\033[0m"
+
+		if [ ! -d $PACKAGE/$eglibc_source ];then	
+			echo "\033[33m\33[01m$eglibc_source not found\033[0m"
+		fi
+		rm $PACKAGE/$eglibc_source/libc/linuxthreads
+		ln -s $PACKAGE/$eglibc_source/linuxthreads/linuxthreads $PACKAGE/$eglibc_source/libc/linuxthreads
+		
+		# EGLIBC Headers and Preliminary Objects
+		cmd_ignore_erro mkdir -p $OBJ/eglibc-headers
+		cd $OBJ/eglibc-headers
+
+		BUILD_CC=gcc  CC=$TOOLS/bin/$TARGET-gcc \
+		CXX=$TOOLS/bin/$TARGET-g++ \
+		AR=$TOOLS/bin/$TARGET-ar \
+		RANLIB=$TOOLS/bin/$TARGET-ranlib \
+		libc_cv_forced_unwind=yes \
+		$PACKAGE/$eglibc_source/libc/configure \
+		     --prefix=/usr \
+		     --with-headers=$SYSROOT/usr/include \
+		     --build=$($PACKAGE/$eglibc_source/localedef/config.guess) \
+		     --host=$TARGET \
+		     --disable-profile --without-gd --without-cvs --enable-add-ons
+
+		make install-headers install_root=$SYSROOT \
+		                     install-bootstrap-headers=yes >/dev/null
+
+		mkdir -p $SYSROOT/usr/lib
+		make csu/subdir_lib >/dev/null
+		cp csu/crt1.o csu/crti.o csu/crtn.o $SYSROOT/usr/lib
+		$TOOLS/bin/$TARGET-gcc -nostdlib -nostartfiles -shared -x c /dev/null \
+		                        -o $SYSROOT/usr/lib/libc.so
+
+		EGLIBC_FIRST=true
+		
+		echo "[$(date +%F) $(date +%H:%M:%S)]	EGLIBC Headers and Preliminary Objects successfull" >> $ROOTPATH/ctool.log
+
+	else
+		echo "\033[32m\33[01m make $eglibc_source by second:ready for the full EGLIBC build\033[0m"
+
+		cmd_ignore_erro mkdir -p $OBJ/eglibc
+    	cd $OBJ/eglibc
+    	BUILD_CC=gcc \
+   		CC=$TOOLS/bin/$TARGET-gcc \
+    	CXX=$TOOLS/bin/$TARGET-g++ \
+    	AR=$TOOLS/bin/$TARGET-ar \
+    	RANLIB=$TOOLS/bin/$TARGET-ranlib \
+		CFLAGS=-Os \
+    	$PACKAGE/$eglibc_source/libc/configure \
+    	     --prefix=/usr \
+    	     --with-headers=$SYSROOT/usr/include \
+    	     --build=$($PACKAGE/$eglibc_source/localedef/config.guess) \
+    	     --host=$TARGET \
+    	     --disable-profile --without-gd --without-cvs  --enable-add-ons \
+			>/dev/null
+    	make >/dev/null
+    	make install install_root=$SYSROOT >/dev/null
+
+		echo "[$(date +%F) $(date +%H:%M:%S)]	full EGLIBC build and install successfull" >> $ROOTPATH/ctool.log
+	fi
+	
+}
+
+mk_gcc_first(){ # 建立初始化编译器   	
+		
+    if [ ! -d $SOURCES/$gcc_source ];then
+        tar j${show_flag:+v}xf $PACKAGE/$gcc_source.tar.bz2 -C $SOURCES
+    fi
+
+   cmd_ignore_erro mkdir -p $OBJ/gcc1
+     
+    cd $OBJ/gcc1
+
+	echo "\033[32m\33[01m make[1] \033[33m$gcc_source \033[31mby first\033[0m"
+
+	$SOURCES/$gcc_source/configure \
+		--target=$TARGET \
+		--prefix=$TOOLS \
+		--without-headers --with-newlib \
+		--disable-shared --disable-threads --disable-libssp \
+		--disable-multilib --disable-decimal-float \
+		--disable-libgomp --disable-libmudflap \
+		--enable-languages=c \
+		>/dev/null
+
+	make all-gcc > $logfile-gcc1
+    make install-gcc >/dev/null
+
+	echo "[$(date +%F) $(date +%H:%M:%S)]	The First GCC successfull" >> $ROOTPATH/ctool.log
+
+}
+
+mk_gcc_second(){ # 建立全套编译器
+
+	cmd_ignore_erro mkdir -p $OBJ/gcc2
+
+    cd $OBJ/gcc2 
+	
+	echo "\033[32m\33[01m make[1] \033[33m$gcc_source \033[31mby second\033[0m"
+
+	$SOURCES/$gcc_source/configure \
+         --target=$TARGET \
+         --prefix=$TOOLS \
+         --with-sysroot=$SYSROOT \
+         --disable-libssp --disable-libgomp --disable-libmudflap \
+		 --disable-libquadmath \
+         --enable-languages=c \
+		>/dev/null
+    make > $logfile-gcc2
+    make install >/dev/null
+
+	echo "[$(date +%F) $(date +%H:%M:%S)]	The Second GCC successfull" >> $ROOTPATH/ctool.log
+
+}
+
+mk_gcc_third(){
+
+	echo "\033[32m\33[01m make[2] \033[33m$gcc_source \033[31mby third\033[0m"
+	
+	cmd_ignore_erro mkdir -p $OBJ/gcc3
+    cd $OBJ/gcc3
+    $SOURCES/$gcc_source/configure \
+         --target=$TARGET \
+         --prefix=$TOOLS \
+         --with-sysroot=$SYSROOT \
+         --enable-__cxa_atexit \
+         --disable-libssp --disable-libgomp --disable-libmudflap \
+         --enable-languages=c,c++ \
+		>/dev/null
+
+	
+    make > $logfile-gcc3
+    make install >/dev/null
+	cp -d $TOOLS/$TARGET/lib/libgcc_s.so* $SYSROOT/lib
+    cp -d $TOOLS/$TARGET/lib/libstdc++.so* $SYSROOT/usr/lib
+	
+	echo "[$(date +%F) $(date +%H:%M:%S)]	The Third GCC successfull" >> $ROOTPATH/ctool.log
+}
+
+mk_gcc_bootstrap(){ # 建立初始化编译器   	
+		
+    if [ ! -d $SOURCES/$gcc_source ];then
+        tar j${show_flag:+v}xf $PACKAGE/$gcc_source.tar.bz2 -C $SOURCES
+    fi
+
+    if [ ! -d $OBJ/gcc-bootstrap-build ];then
+        mkdir $OBJ/gcc-bootstrap-build
+    fi
+     
+
+    cd $OBJ/gcc-bootstrap-build
+	
+	echo "\033[32m\33[01m make[1] \033[33m$gcc_source \033[31mby first\033[0m"
+
+	$SOURCES/$gcc_source/configure --target=$TARGET --prefix=$TOOLS --disable-nls --disable-shared \
+	--disable-multilib --disable-decimal-float --disable-threads --disable-libmudflap \
+	--disable-libssp --disable-libgomp --without-headers   --with-newlib  \
+	--with-gmp=/usr --with-mpfr=/usr --with-mpc=/usr \
+	--enable-languages=c \
+	>/dev/null
+
+	
+    make all-gcc > $logfile-all-gcc
+    make all-target-libgcc > $logfile-all-target-libgcc
+    make install-gcc >/dev/null
+    make install-target-libgcc >/dev/null
+
+	echo "[$(date +%F) $(date +%H:%M:%S)]	make GCC bootstrap successfull" >> $ROOTPATH/ctool.log
+
+}
+
+mk_gcc_full(){ # 建立全套编译器
+    if [ ! -d $OBJ/gcc-full-build ];then
+		mkdir $OBJ/gcc-full-build
+	fi
+    cd $OBJ/gcc-full-build 
+	# --with-headers 是必需的，因为{$TARGET}-gcc 会到--with-headers指定的目录查找头文件。这个选项会将相关目录复制到$TOOLS/$TARGET/sys-include目录下。 
+    $SOURCES/$gcc_source/configure --target=$TARGET --host=$($SOURCES/$gcc_source/config.guess) \
+    --prefix=$TOOLS \
+    --with-headers=$SYSROOT/usr/include/ \
+    --enable-languages=c,c++ \
+    --disable-multilib  --enable-shared \
+	--enable-nls \
+	--disable-libgomp \
+	--disable-libitm \
+	>/dev/null
+
+	echo "\033[32m\33[01m make[2] \033[33m$gcc_source \033[31mby second\033[0m"
+
+    make all > $logfile-full-gcc
+    make install >/dev/null
+	
+	echo "[$(date +%F) $(date +%H:%M:%S)]	make full GCC successfull" >> $ROOTPATH/ctool.log
+}
+
+tools_test(){
+	echo "===== crosstools chain test ======="
+
+	cat > hello.c <<EOF
+     #include <stdio.h>
+     int
+     main (int argc, char **argv)
+     {
+       puts ("Hello, world!");
+       return 0;
+     }
+EOF
+    
+	 $TOOLS/bin/$TARGET-gcc -Wall hello.c -o hello
+
+     cat > c++-hello.cc <<EOF
+     #include <iostream>
+     int
+     main (int argc, char **argv)
+     {
+       std::cout << "Hello, C++ world!" << std::endl;
+       return 0;
+     }
+EOF
+
+    $TOOLS/bin/$TARGET-g++ -Wall c++-hello.cc -o c++-hello
+
+}
+
+distclean(){
+
+	echo "Are you sure remove all build object? yes [no]"
+	read comit
+	if [ "$comit" = "yes" ];then
+
+		ls $ROOTPATH | grep -v ctool | grep -v pakages | grep -v config.in | xargs rm -rf
+
+		cmd_ignore_erro rm -rf log-*
+
+		echo "!!\033[33m\33[01m remove all object \033[0m"
+	fi
+	
+}
+
+parse_ctool(){ # this function used to parse parameter
+
+	while getopts :hvcV:M:p: opt
+	do
+		case $opt in
+
+		h) usage
+			exit 0
+		;;
+		V) verbose=true
+		    verboseflag=$OPTARG
+		;;
+		v) echo "current ctool's version is $version\n"
+			exit 0
+		;;
+		c)	configure=true
+			show_configinfo
+			exit 0
+		;;
+		M) Mode=true
+		    modeflag=$OPTARG
+		;;
+		p) packageflag=true
+		    pname=$OPTARG
+		;;
+		q) quiet=ture
+		;;
+		'?') echo "\033[31m$0: invalid option -$OPTARG ,please use "$0 -h" to get more help information \033[0m" >&2
+			exit 1
+		;;
+
+		esac
+	done
+
+	shift $((OPTIND - 1))
+	
+	if $verbose ;then
+		case $verboseflag in
+		s) show_flag=true
+		;;
+		esac
+	fi
+	
+	if [ "$modeflag" = "distclean" ];then
+		distclean
+		exit 0
+	elif [ "$modeflag" = "all" ];then
+		ignore_erro=true
+		set +e
+	elif [ "$modeflag" = "config" ];then
+		create_config_file
+		exit 0
+	fi
+	
+	# check package,below will build software
+	check_package
+
+	if [ $packageflag ];then
+		if [ "$pname" != "listpkgs" ];then
+			mk_$pname
+		else
+			echo "===== list all package in local ======"
+			ls  -w 1 $PACKAGE
+		fi
+		exit 0
+	fi
+
+}
+
+check_package(){
+
+# find all package
+if [ ! -d $PACKAGE ];then
+    mkdir $PACKAGE
+fi
+
+if [ ! -f $PACKAGE/$binutils_source.* ];then
+    wget http://ftp.gnu.org/gnu/binutils/$binutils_source.tar.bz2 -P $PACKAGE
+fi
+
+if [ ! -f $PACKAGE/$gcc_source.* ];then
+    wget http://ftp.gnu.org/gnu/gcc/$gcc_source/$gcc_source.tar.bz2 -P $PACKAGE
+fi
+
+if [ "$USE_EGLIBC" = "no" ];then
+	if [ ! -f $PACKAGE/$glibc_source.* ];then
+		wget http://ftp.gnu.org/gnu/glibc/$glibc_source.tar.bz2  -P $PACKAGE
+	fi
+
+	if [ ! -f $PACKAGE/glibc-linuxthreads-2.5.tar.bz2 ];then
+		wget http://ftp.gnu.org/gnu/glibc/glibc-linuxthreads-2.5.tar.bz2  -P $PACKAGE
+	fi
+
+elif [ "$USE_EGLIBC" = "yes" ];then
+	if [ ! -d $PACKAGE/$eglibc_source ];then
+		var=${eglibc_source#*.}
+		svn co svn://svn.eglibc.org/branches/eglibc-2_$var  $PACKAGE/$eglibc_source
+	fi
+fi
+
+if [ ! -f $PACKAGE/$linux_source.* ];then
+    wget ftp://ftp.kernel.org/pub/linux/kernel/v3.x/$linux_source.tar.bz2  -P $PACKAGE
+fi
+
+if [ ! -f $PACKAGE/$gmp_source.* ];then
+    wget ftp://ftp.gnu.org/gnu/gmp/$gmp_source.tar.bz2  -P $PACKAGE
+fi
+
+if [ ! -f $PACKAGE/$mpfr_source.* ];then
+    wget http://www.mpfr.org/mpfr-current/$mpfr_source.tar.bz2  -P $PACKAGE
+fi
+
+if [ ! -f $PACKAGE/$mpc_source.* ];then
+	wget http://www.multiprecision.org/mpc/download/mpc-1.0.tar.gz -P $PACKAGE
+fi
+
+echo "\033[32;40m\33[01m found all pakages \033[0m"
+
+}
+
+
+timeConsume () {
+    time1="$1"
+    time2="$2"
+	
+    diff_seconds=`expr $time1 - $time2 `
+	echo "diff_seconds = $diff_seconds"
+    if [ $diff_seconds -lt 0 ]
+    then
+        echo "Usage: timeConsume \"parm1\" \"parm2\"," \
+             "parm1 should be larger than parm2"
+        return
+    fi
+	
+    seconds=$(( $diff_seconds % 60 ))
+    diff_minutes=$(( $diff_seconds / 60 ))
+	
+    if [ $diff_minutes -gt 0 ]
+    then
+        minutes=$(( $diff_minutes % 60 ))
+        diff_hours=$(( $diff_minutes / 60))
+        if [ $diff_hours -gt 0 ]
+        then
+            hours=$(( $diff_hours % 60 ))
+            diff_days=$(( $diff_hours / 60 ))
+            if [ $diff_days -gt 0 ]
+            then
+                days=$diff_days
+                echo "use $days days $hours hours $minutes minutes $seconds seconds"
+            else
+                echo "use $hours hours $minutes minutes $seconds seconds"
+            fi
+        else
+            echo "use $minutes minutes $seconds seconds"
+        fi
+    else
+        echo "use $seconds seconds"
+    fi
+}
+
+
+parse_config
+
+
+if [ ! -d $SOURCES ];then
+    mkdir -p $SOURCES
+fi
+
+parse_ctool $@
+
+show_configinfo
+
+
+if [ ! $verbose ];then
+	echo "\033[33m\33[01m if you want see more information,please use -V option,or see *.log files! \033[0m"
+fi
+
+# 遇到错误退出
+set -e
+
+echo "@@@@ ctool build log file;start time: $(date +%F) $(date +%H:%M:%S) \n" > $ROOTPATH/ctool.log
+
+starttime=`date -u +%s`
+
+if [ "$USE_EGLIBC" = "yes" ];then
+
+	mk_binutils
+
+	mk_gmp
+
+	mk_mpfr
+
+	mk_mpc
+
+	mk_gcc_first
+
+	mk_linux_header
+
+	mk_eglibc
+
+	mk_gcc_second
+
+	mk_eglibc
+
+	mk_gcc_third
+
+	
+elif [ "$USE_EGLIBC" = "no" ];then
+
+	mk_binutils
+
+	mk_gmp
+
+	mk_mpfr
+
+	mk_mpc
+
+	mk_gcc_bootstrap
+
+	mk_linux_header
+
+	mk_glibc
+
+	mk_gcc_full
+fi
+
+
+echo "\033[31m\33[01mBuild successfull.\033[0m"
+
+
+#TODO Build GDB
+
+#TODO Package crosstool chain.
+
+endtime=`date -u +%s`
+
+timeConsume "$endtime" "$starttime"
+
+
+
